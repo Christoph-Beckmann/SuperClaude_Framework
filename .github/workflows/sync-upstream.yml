@@ -1,0 +1,101 @@
+name: 🔄 Sync Fork with Upstream
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # Daily at 4:00 UTC
+  workflow_dispatch:     # Manual trigger
+    inputs:
+      sync_method:
+        description: 'Sync method'
+        required: true
+        default: 'rebase'
+        type: choice
+        options:
+          - rebase
+          - merge
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Fork Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # Fetch all history for proper rebasing
+
+      - name: 🔧 Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 🔗 Add Upstream Remote
+        run: |
+          git remote add upstream https://github.com/SuperClaude-Org/SuperClaude_Framework.git || true
+          git remote -v
+
+      - name: 📥 Fetch Upstream Changes
+        run: |
+          git fetch upstream master
+          git fetch origin main
+
+      - name: 🔀 Check for Updates
+        id: check
+        run: |
+          LOCAL_COMMIT=$(git rev-parse main)
+          UPSTREAM_COMMIT=$(git rev-parse upstream/master)
+
+          if [ "$LOCAL_COMMIT" = "$UPSTREAM_COMMIT" ]; then
+            echo "✅ Already up-to-date with upstream"
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          else
+            echo "📊 Updates available from upstream"
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+
+            # Show what will be synced
+            echo "📝 Commits to be synced:"
+            git log --oneline main..upstream/master | head -20
+          fi
+
+      - name: 🔁 Sync with Upstream (Rebase)
+        if: steps.check.outputs.has_updates == 'true' && (github.event.inputs.sync_method == 'rebase' || github.event_name == 'schedule')
+        run: |
+          echo "🔄 Rebasing main on upstream/master..."
+          git checkout main
+          git rebase upstream/master
+
+      - name: 🔀 Sync with Upstream (Merge)
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'merge'
+        run: |
+          echo "🔀 Merging upstream/master into main..."
+          git checkout main
+          git merge upstream/master --no-edit
+
+      - name: 📤 Push Changes
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git push origin main --force-with-lease
+          echo "✅ Fork synced successfully with upstream/master"
+
+      - name: 📊 Summary
+        if: always()
+        run: |
+          echo "### Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.has_updates }}" = "true" ]; then
+            echo "✅ **Fork has been synced with upstream/master**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Method:** ${{ github.event.inputs.sync_method || 'rebase' }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Latest commits from upstream:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            git log --oneline -5 upstream/master >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Fork is already up-to-date with upstream/master**" >> $GITHUB_STEP_SUMMARY
+          fi
