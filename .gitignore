@@ -198,4 +198,5 @@ TODO.txt
 
 # Development artifacts (should not be in repo)
 package-lock.json
+.hooks-logs/
 uv.lock.hooks-logs/
