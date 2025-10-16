@@ -29,6 +29,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0  # Fetch all history for proper rebasing
+          ref: main  # Always checkout the main branch, not a specific commit
 
       - name: 🔧 Configure Git
         run: |
@@ -46,6 +47,18 @@ jobs:
           git fetch --all --prune
           git fetch upstream master
           git fetch origin main
+
+      - name: 🔄 Update from Origin
+        run: |
+          echo "📥 Ensuring we're up-to-date with origin/main..."
+          git pull origin main --ff-only || {
+            echo "⚠️ Cannot fast-forward, attempting rebase..."
+            git pull origin main --rebase || {
+              echo "❌ Failed to update from origin"
+              exit 1
+            }
+          }
+          echo "✅ Updated from origin/main"
 
       - name: 🔍 Check for Unpushed Commits
         id: check_unpushed
@@ -106,17 +119,50 @@ jobs:
             echo "✅ Rebase successful"
             echo "sync_result=rebase_success" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ Rebase failed, attempting merge..."
-            git rebase --abort
+            echo "⚠️ Rebase failed, checking for conflicts..."
 
-            # Fall back to merge
-            if git merge upstream/master --no-edit; then
-              echo "✅ Merge successful"
-              echo "sync_result=merge_success" >> $GITHUB_OUTPUT
+            # Check if it's a deletion conflict
+            CONFLICTS=$(git status --porcelain | grep "^DU\|^UD" || true)
+            if [ -n "$CONFLICTS" ]; then
+              echo "🔧 Detected file deletion conflicts, resolving..."
+
+              # Accept upstream deletions
+              git status --porcelain | grep "^DU" | awk '{print $2}' | xargs -r git rm
+
+              # For files deleted locally but modified upstream, keep upstream version
+              git status --porcelain | grep "^UD" | awk '{print $2}' | xargs -r git add
+
+              # Try to continue rebase
+              if git rebase --continue; then
+                echo "✅ Rebase successful after resolving deletion conflicts"
+                echo "sync_result=rebase_success" >> $GITHUB_OUTPUT
+              else
+                echo "⚠️ Rebase still failing, aborting and trying merge..."
+                git rebase --abort
+
+                # Fall back to merge with strategy
+                if git merge upstream/master --strategy-option=theirs --no-edit; then
+                  echo "✅ Merge successful with upstream preference"
+                  echo "sync_result=merge_success" >> $GITHUB_OUTPUT
+                else
+                  echo "❌ Both rebase and merge failed"
+                  echo "sync_result=failed" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              fi
             else
-              echo "❌ Both rebase and merge failed"
-              echo "sync_result=failed" >> $GITHUB_OUTPUT
-              exit 1
+              echo "⚠️ Non-deletion conflicts detected, aborting rebase..."
+              git rebase --abort
+
+              # Fall back to merge with strategy
+              if git merge upstream/master --strategy-option=theirs --no-edit; then
+                echo "✅ Merge successful with upstream preference"
+                echo "sync_result=merge_success" >> $GITHUB_OUTPUT
+              else
+                echo "❌ Both rebase and merge failed"
+                echo "sync_result=failed" >> $GITHUB_OUTPUT
+                exit 1
+              fi
             fi
           fi
 
