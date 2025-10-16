@@ -18,6 +18,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  workflows: write  # Required to update workflow files from upstream
+  actions: write    # Required for workflow modifications
 
 jobs:
   sync:
@@ -208,12 +210,17 @@ jobs:
             echo "✅ Fork synced successfully with upstream/master"
             echo "push_result=success" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ Force-with-lease failed, trying regular push..."
-            if git push origin main; then
-              echo "✅ Fork synced successfully with upstream/master"
-              echo "push_result=success" >> $GITHUB_OUTPUT
+            echo "⚠️ Force-with-lease failed, trying force push..."
+
+            # Since we've already rebased successfully and resolved conflicts,
+            # and we have a backup branch, it's safe to force push
+            if git push origin main --force; then
+              echo "✅ Fork synced successfully with upstream/master (force push)"
+              echo "push_result=success_forced" >> $GITHUB_OUTPUT
+              echo "⚠️ Had to use force push due to diverged history" >> $GITHUB_STEP_SUMMARY
+              echo "💾 Backup branch created: ${{ env.backup_branch }}" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ Push failed"
+              echo "❌ Push failed even with force"
               echo "push_result=failed" >> $GITHUB_OUTPUT
 
               # Provide recovery instructions
