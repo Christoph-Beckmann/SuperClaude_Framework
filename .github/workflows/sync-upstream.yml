@@ -8,12 +8,12 @@ on:
       sync_method:
         description: 'Sync method'
         required: true
-        default: 'rebase'
+        default: 'smart'
         type: choice
         options:
+          - smart  # Try rebase, fall back to merge if conflicts (recommended)
           - rebase
           - merge
-          - smart  # Try rebase, fall back to merge if conflicts
 
 permissions:
   contents: write
@@ -95,7 +95,7 @@ jobs:
           echo "backup_branch=$BACKUP_BRANCH" >> $GITHUB_ENV
 
       - name: 🔁 Sync with Upstream (Smart Mode)
-        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'smart'
+        if: steps.check.outputs.has_updates == 'true' && (github.event.inputs.sync_method == 'smart' || github.event_name == 'schedule' || github.event.inputs.sync_method == null)
         id: smart_sync
         run: |
           echo "🎯 Smart sync mode: attempting rebase first..."
@@ -121,7 +121,7 @@ jobs:
           fi
 
       - name: 🔁 Sync with Upstream (Rebase)
-        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'rebase' && github.event.inputs.sync_method != 'smart'
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'rebase'
         id: rebase_sync
         run: |
           echo "🔄 Rebasing main on upstream/master..."
@@ -138,7 +138,7 @@ jobs:
           fi
 
       - name: 🔀 Sync with Upstream (Merge)
-        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'merge' && github.event.inputs.sync_method != 'smart'
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'merge'
         id: merge_sync
         run: |
           echo "🔀 Merging upstream/master into main..."
