@@ -13,6 +13,7 @@ on:
         options:
           - rebase
           - merge
+          - smart  # Try rebase, fall back to merge if conflicts
 
 permissions:
   contents: write
@@ -39,14 +40,32 @@ jobs:
           git remote add upstream https://github.com/SuperClaude-Org/SuperClaude_Framework.git || true
           git remote -v
 
-      - name: 📥 Fetch Upstream Changes
+      - name: 📥 Fetch All Remotes
         run: |
+          echo "📥 Fetching all remotes..."
+          git fetch --all --prune
           git fetch upstream master
           git fetch origin main
+
+      - name: 🔍 Check for Unpushed Commits
+        id: check_unpushed
+        run: |
+          UNPUSHED_COUNT=$(git rev-list HEAD --not --remotes=origin | wc -l)
+          if [ "$UNPUSHED_COUNT" -gt 0 ]; then
+            echo "⚠️ Warning: $UNPUSHED_COUNT unpushed commits detected"
+            echo "has_unpushed=true" >> $GITHUB_OUTPUT
+            git log --oneline HEAD --not --remotes=origin
+          else
+            echo "✅ No unpushed commits"
+            echo "has_unpushed=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: 🔀 Check for Updates
         id: check
         run: |
+          # Ensure we're on the right branch
+          git checkout main || git checkout -b main origin/main
+
           LOCAL_COMMIT=$(git rev-parse main)
           UPSTREAM_COMMIT=$(git rev-parse upstream/master)
 
@@ -60,27 +79,110 @@ jobs:
             # Show what will be synced
             echo "📝 Commits to be synced:"
             git log --oneline main..upstream/master | head -20
+
+            # Count commits
+            COMMIT_COUNT=$(git rev-list --count main..upstream/master)
+            echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+            echo "📊 Total commits to sync: $COMMIT_COUNT"
+          fi
+
+      - name: 🔒 Create Backup Branch
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          BACKUP_BRANCH="backup-$(date +%Y%m%d-%H%M%S)"
+          git branch $BACKUP_BRANCH main
+          echo "💾 Created backup branch: $BACKUP_BRANCH"
+          echo "backup_branch=$BACKUP_BRANCH" >> $GITHUB_ENV
+
+      - name: 🔁 Sync with Upstream (Smart Mode)
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'smart'
+        id: smart_sync
+        run: |
+          echo "🎯 Smart sync mode: attempting rebase first..."
+          git checkout main
+
+          # Try rebase first
+          if git rebase upstream/master; then
+            echo "✅ Rebase successful"
+            echo "sync_result=rebase_success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Rebase failed, attempting merge..."
+            git rebase --abort
+
+            # Fall back to merge
+            if git merge upstream/master --no-edit; then
+              echo "✅ Merge successful"
+              echo "sync_result=merge_success" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Both rebase and merge failed"
+              echo "sync_result=failed" >> $GITHUB_OUTPUT
+              exit 1
+            fi
           fi
 
       - name: 🔁 Sync with Upstream (Rebase)
-        if: steps.check.outputs.has_updates == 'true' && (github.event.inputs.sync_method == 'rebase' || github.event_name == 'schedule')
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'rebase' && github.event.inputs.sync_method != 'smart'
+        id: rebase_sync
         run: |
           echo "🔄 Rebasing main on upstream/master..."
           git checkout main
-          git rebase upstream/master
+
+          if git rebase upstream/master; then
+            echo "✅ Rebase successful"
+            echo "sync_result=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Rebase failed - conflicts detected"
+            git rebase --abort
+            echo "sync_result=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
       - name: 🔀 Sync with Upstream (Merge)
-        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'merge'
+        if: steps.check.outputs.has_updates == 'true' && github.event.inputs.sync_method == 'merge' && github.event.inputs.sync_method != 'smart'
+        id: merge_sync
         run: |
           echo "🔀 Merging upstream/master into main..."
           git checkout main
-          git merge upstream/master --no-edit
+
+          if git merge upstream/master --no-edit; then
+            echo "✅ Merge successful"
+            echo "sync_result=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Merge failed - conflicts detected"
+            echo "sync_result=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
       - name: 📤 Push Changes
         if: steps.check.outputs.has_updates == 'true'
+        id: push
         run: |
-          git push origin main --force-with-lease
-          echo "✅ Fork synced successfully with upstream/master"
+          # First try with --force-with-lease for safety
+          if git push origin main --force-with-lease; then
+            echo "✅ Fork synced successfully with upstream/master"
+            echo "push_result=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Force-with-lease failed, trying regular push..."
+            if git push origin main; then
+              echo "✅ Fork synced successfully with upstream/master"
+              echo "push_result=success" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Push failed"
+              echo "push_result=failed" >> $GITHUB_OUTPUT
+
+              # Provide recovery instructions
+              echo "### Recovery Instructions" >> $GITHUB_STEP_SUMMARY
+              echo "To recover from the backup branch:" >> $GITHUB_STEP_SUMMARY
+              echo '```bash' >> $GITHUB_STEP_SUMMARY
+              echo "git checkout ${{ env.backup_branch }}" >> $GITHUB_STEP_SUMMARY
+              echo "git branch -D main" >> $GITHUB_STEP_SUMMARY
+              echo "git branch -m main" >> $GITHUB_STEP_SUMMARY
+              echo "git push origin main --force" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+
+              exit 1
+            fi
+          fi
 
       - name: 📊 Summary
         if: always()
